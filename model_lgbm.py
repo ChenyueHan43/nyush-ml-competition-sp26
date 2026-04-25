@@ -32,6 +32,7 @@ from features_enhanced import (
 )
 
 DATA_DIR = Path(__file__).parent / "data"
+TRAIN_START = "2022-01-01"   # selected via val IC in self_test.py window experiment
 VAL_DAYS = 10
 EMBARGO_DAYS = 5
 MIN_STOCKS = 30
@@ -94,7 +95,7 @@ def train_ensemble(panel: pd.DataFrame, as_of_ts: pd.Timestamp) -> list:
     cutoff_idx = max(0, as_of_idx - FORWARD_HORIZON)
     train_cutoff = pd.Timestamp(trading_dates[cutoff_idx])
 
-    train_pool = training_frame(panel, max_date=train_cutoff)
+    train_pool = training_frame(panel, min_date=TRAIN_START, max_date=train_cutoff)
     all_dates = np.sort(train_pool["date"].unique())
 
     if len(all_dates) < VAL_DAYS + EMBARGO_DAYS + 40:
@@ -187,7 +188,7 @@ def walk_forward_backtest(panel: pd.DataFrame, n_windows: int = 8):
         cutoff_idx = max(0, idx - FORWARD_HORIZON)
         train_cutoff = pd.Timestamp(trading_dates[cutoff_idx])
 
-        train_pool = training_frame(panel, max_date=train_cutoff)
+        train_pool = training_frame(panel, min_date=TRAIN_START, max_date=train_cutoff)
         all_dates = np.sort(train_pool["date"].unique())
         if len(all_dates) < VAL_DAYS + EMBARGO_DAYS + 40:
             continue

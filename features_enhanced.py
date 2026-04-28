@@ -175,21 +175,16 @@ def _per_stock_features(df: pd.DataFrame) -> pd.DataFrame:
     df["overnight_ratio_20d"] = df["overnight_ret"].rolling(20).mean()
 
     # Consecutive up / down streak (positive = # consecutive up days, negative = down)
+    # Vectorized: group consecutive same-direction runs, count within each group.
     sign = np.sign(df["ret_1d"].fillna(0))
-    streak = []
-    cur = 0
-    for s in sign:
-        if s > 0:
-            cur = max(cur, 0) + 1
-        elif s < 0:
-            cur = min(cur, 0) - 1
-        else:
-            cur = 0
-        streak.append(cur)
-    df["streak"] = streak
+    direction_change = (sign != sign.shift(1)).fillna(True)
+    group_id = direction_change.cumsum()
+    cumcount = sign.groupby(group_id).cumcount() + 1
+    df["streak"] = (cumcount * sign).astype(int)
 
     # --- Target ---
     df[TARGET_COLUMN] = close.shift(-FORWARD_HORIZON) / close.replace(0, np.nan) - 1.0
+    df["target_3d"]   = close.shift(-3) / close.replace(0, np.nan) - 1.0
 
     return df
 
@@ -212,7 +207,59 @@ def _cross_sectional_ranks(panel: pd.DataFrame) -> pd.DataFrame:
     return panel
 
 
-def build_features(prices: pd.DataFrame) -> pd.DataFrame:
+def _industry_neutralize(panel: pd.DataFrame, industry_path: str | None = None) -> pd.DataFrame:
+    """Subtract industry mean from target and key return features (per date).
+
+    This removes the sector-rotation component so the model learns to pick
+    stocks that outperform their industry peers rather than betting on sectors.
+    If industry data is unavailable the panel is returned unchanged.
+    """
+    from pathlib import Path
+    if industry_path is None:
+        industry_path = str(Path(__file__).parent / "data" / "industry.csv")
+    try:
+        ind = pd.read_csv(industry_path, dtype={"stock_code": str})
+        ind["stock_code"] = ind["stock_code"].str.zfill(6)
+    except FileNotFoundError:
+        return panel
+
+    panel = panel.merge(ind[["stock_code", "sw1_industry"]], on="stock_code", how="left")
+    # Fall back to "Unknown" for any unmatched stocks
+    panel["sw1_industry"] = panel["sw1_industry"].fillna("Unknown")
+
+    # Columns to neutralize: target + return / momentum features
+    neutralize_cols = [TARGET_COLUMN] + [
+        "ret_1d", "ret_3d", "ret_5d", "ret_10d", "ret_20d", "ret_60d", "ret_120d",
+        "overnight_ret", "intraday_ret", "overnight_ratio_20d",
+        "max_ret_20d", "min_ret_20d",
+    ]
+    existing = [c for c in neutralize_cols if c in panel.columns]
+
+    for col in existing:
+        group_mean = panel.groupby(["date", "sw1_industry"])[col].transform("mean")
+        panel[col] = panel[col] - group_mean
+
+    # Re-compute cross-sectional ranks on the neutralized values
+    panel = _cross_sectional_ranks(panel)
+    return panel
+
+
+def build_features(
+    prices: pd.DataFrame,
+    industry_neutral: bool = True,
+    cache: bool = True,
+) -> pd.DataFrame:
+    from pathlib import Path
+    cache_suffix = "_neutral" if industry_neutral else "_raw"
+    cache_path = Path(__file__).parent / "data" / f"panel_enhanced{cache_suffix}.parquet"
+    prices_path = Path(__file__).parent / "data" / "prices.parquet"
+
+    # Use cache if it exists and is newer than prices.parquet
+    if cache and cache_path.exists() and prices_path.exists():
+        if cache_path.stat().st_mtime >= prices_path.stat().st_mtime:
+            print(f"   [cache] Loading from {cache_path.name}")
+            return pd.read_parquet(cache_path)
+
     required = {"date", "stock_code", "close", "volume"}
     missing = required - set(prices.columns)
     if missing:
@@ -226,6 +273,12 @@ def build_features(prices: pd.DataFrame) -> pd.DataFrame:
         .reset_index(drop=True)
     )
     panel = _cross_sectional_ranks(panel)
+    if industry_neutral:
+        panel = _industry_neutralize(panel)
+
+    if cache:
+        panel.to_parquet(cache_path, index=False)
+        print(f"   [cache] Saved to {cache_path.name}")
     return panel
 
 

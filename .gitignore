@@ -10,3 +10,4 @@ trading/
 .claude/
 .mcp.json
 CLAUDE.md
+data/panel_enhanced_*.parquet

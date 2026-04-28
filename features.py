@@ -57,6 +57,7 @@ def _per_stock_features(df: pd.DataFrame) -> pd.DataFrame:
     df["rsi_14"] = 100 - 100 / (1 + rs)
 
     df[TARGET_COLUMN] = close.shift(-FORWARD_HORIZON) / close - 1.0
+    df["target_3d"]   = close.shift(-3) / close - 1.0
     return df
 
 

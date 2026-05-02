@@ -57,6 +57,11 @@ FEATURE_COLUMNS = [
     "amihud_20d_rank", "max_ret_20d_rank", "min_ret_20d_rank",
     "price_to_52w_high_rank", "turnover_z_60d_rank",
     "overnight_ret_rank", "streak_rank",
+    # --- v3: short-term reversal ---
+    "reversal_1d_rank",   # rank of -ret_1d: recent losers ranked high
+    "reversal_5d_rank",   # rank of -ret_5d
+    "price_pressure",     # ret_5d * volume_z_20d: high-vol gains → more reversal
+    "price_pressure_rank",
 ]
 
 TARGET_COLUMN = "target_5d"
@@ -182,6 +187,10 @@ def _per_stock_features(df: pd.DataFrame) -> pd.DataFrame:
     cumcount = sign.groupby(group_id).cumcount() + 1
     df["streak"] = (cumcount * sign).astype(int)
 
+    # ── v3: short-term reversal ────────────────────────────────────────────────
+    # price_pressure: recent gain amplified by abnormal volume → reversal pressure
+    df["price_pressure"] = df["ret_5d"] * df["volume_z_20d"]
+
     # --- Target ---
     df[TARGET_COLUMN] = close.shift(-FORWARD_HORIZON) / close.replace(0, np.nan) - 1.0
     df["target_3d"]   = close.shift(-3) / close.replace(0, np.nan) - 1.0
@@ -198,11 +207,19 @@ def _cross_sectional_ranks(panel: pd.DataFrame) -> pd.DataFrame:
         "amihud_20d", "max_ret_20d", "min_ret_20d",
         "price_to_52w_high", "turnover_z_60d",
         "overnight_ret", "streak",
+        # v3 reversal (negate so high rank = strong reversal candidate)
+        "price_pressure",
     ]
     for col in rank_cols:
         if col in panel.columns:
             panel[f"{col}_rank"] = panel.groupby("date")[col].rank(
                 method="average", pct=True
+            )
+    # reversal ranks: rank of negative return (losers get high rank)
+    for col in ["ret_1d", "ret_5d"]:
+        if col in panel.columns:
+            panel[f"reversal_{col.replace('ret_', '')}_rank"] = panel.groupby("date")[col].rank(
+                method="average", pct=True, ascending=False
             )
     return panel
 

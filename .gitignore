@@ -4,13 +4,9 @@ __pycache__/
 .ipynb_checkpoints/
 .DS_Store
 *.log
-submissions/
 trading/
 .cc-agent/
 .claude/
 .mcp.json
 CLAUDE.md
 data/panel_enhanced_*.parquet
-data/prices.parquet
-data/index.parquet
-data/constituents.csv

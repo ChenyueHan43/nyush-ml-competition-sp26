@@ -44,7 +44,7 @@ DATA_DIR = Path(__file__).parent / "data"
 LOOKBACK_DAYS = 500      # 训练窗口：最近 500 个交易日（在 val 集上确定）
 VAL_DAYS      = 10       # 末尾 10 个交易日作为早停验证集
 EMBARGO_DAYS  = 5        # val 和 train 之间的 embargo（>= FORWARD_HORIZON）
-DEFAULT_TOP_K = 50       # 组合持股数
+DEFAULT_TOP_K = 30       # 组合持股数
 
 LGB_PARAMS = dict(
     objective        = "regression",
@@ -65,25 +65,11 @@ LGB_PARAMS = dict(
 
 
 def train(panel: pd.DataFrame, as_of_ts: pd.Timestamp) -> lgb.LGBMRegressor:
-    """
-    以 as_of_ts 为基准，用最近 LOOKBACK_DAYS 个交易日的数据训练模型。
-
-    时间轴示意：
-      [ ... 旧数据（丢弃）... | <-- 500d --> train_start ... train_end | embargo | val | as_of ]
-                                                                         ^5d gap^  ^10d^
-
-    - train_end / val 的划分保证训练标签（5日前向收益）不与验证特征重叠
-    - 500d 窗口在 val 集上通过 IC 选定（见 self_test.py select_lookback_on_val）
-    """
     trading_dates = np.sort(panel["date"].unique())
-
-    # 预测基准日对应的 target cutoff：target_t 用到 t+5 的价格，
-    # 所以训练数据截止到 as_of - FORWARD_HORIZON，避免 target 泄漏
-    as_of_idx   = int(np.searchsorted(trading_dates, np.datetime64(as_of_ts)))
-    cutoff_idx  = max(0, as_of_idx - FORWARD_HORIZON)
+    as_of_idx    = int(np.searchsorted(trading_dates, np.datetime64(as_of_ts)))
+    cutoff_idx   = max(0, as_of_idx - FORWARD_HORIZON)
     train_cutoff = pd.Timestamp(trading_dates[cutoff_idx])
 
-    # 取全部可用训练数据，再截取最近 LOOKBACK_DAYS 天
     train_pool = panel[panel["date"] <= train_cutoff].dropna(
         subset=FEATURE_COLUMNS + [TARGET_COLUMN]
     )
@@ -96,7 +82,6 @@ def train(panel: pd.DataFrame, as_of_ts: pd.Timestamp) -> lgb.LGBMRegressor:
     if len(pool_dates) < VAL_DAYS + EMBARGO_DAYS + 40:
         raise RuntimeError("训练数据不足，请检查 prices.parquet 日期范围。")
 
-    # 末尾 10 天作为早停验证集，中间 5 天 embargo 丢弃
     val_start = pd.Timestamp(pool_dates[-VAL_DAYS])
     train_end = pd.Timestamp(pool_dates[-(VAL_DAYS + EMBARGO_DAYS + 1)])
     train_df  = train_pool[train_pool["date"] <= train_end]
@@ -107,15 +92,10 @@ def train(panel: pd.DataFrame, as_of_ts: pd.Timestamp) -> lgb.LGBMRegressor:
     print(f"   验证: {len(val_df):,} 行，"
           f"{val_df['date'].min().date()} → {val_df['date'].max().date()}")
 
-    # 提交时用固定 300 轮，不做早停。
-    # val 窗口只有最近 ~10 天，信噪比低，早停会在第 1 轮就触发。
-    # 300 轮来自 self_test walk-forward 的典型 best_iteration 区间。
-    params_submit = {**LGB_PARAMS, "n_estimators": 300}
+    params_submit = {**LGB_PARAMS, "n_estimators": 180}
     model = lgb.LGBMRegressor(**params_submit)
-    model.fit(
-        train_df[FEATURE_COLUMNS], train_df[TARGET_COLUMN],
-    )
-    print(f"   训练完成（固定 300 轮）")
+    model.fit(train_df[FEATURE_COLUMNS], train_df[TARGET_COLUMN])
+    print(f"   训练完成（固定 180 轮）")
     return model
 
 

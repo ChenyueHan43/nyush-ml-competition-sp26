@@ -36,7 +36,7 @@ from features_enhanced import (
     FEATURE_COLUMNS, TARGET_COLUMN, FORWARD_HORIZON,
     build_features, prediction_frame,
 )
-from model_lgbm import build_portfolio, MIN_STOCKS, MAX_WEIGHT
+from model_lgbm import MIN_STOCKS, MAX_WEIGHT
 
 DATA_DIR = Path(__file__).parent / "data"
 
@@ -44,7 +44,7 @@ DATA_DIR = Path(__file__).parent / "data"
 LOOKBACK_DAYS = 500      # 训练窗口：最近 500 个交易日（在 val 集上确定）
 VAL_DAYS      = 10       # 末尾 10 个交易日作为早停验证集
 EMBARGO_DAYS  = 5        # val 和 train 之间的 embargo（>= FORWARD_HORIZON）
-DEFAULT_TOP_K = 30       # 组合持股数
+DEFAULT_TOP_K = 30       # 组合持股数（val set 上选定）
 
 LGB_PARAMS = dict(
     objective        = "regression",
@@ -62,6 +62,26 @@ LGB_PARAMS = dict(
     n_jobs           = -1,
     verbose          = -1,
 )
+
+
+def build_score_weighted(scores: pd.Series, top_k: int = DEFAULT_TOP_K) -> pd.Series:
+    """Score-weighted portfolio: weight proportional to predicted score magnitude."""
+    if top_k < MIN_STOCKS:
+        raise ValueError(f"top_k must be >= {MIN_STOCKS}")
+    chosen = scores.sort_values(ascending=False).head(top_k).copy()
+    chosen = chosen - chosen.min() + 1e-6  # shift to positive
+    w = chosen / chosen.sum()
+    for _ in range(100):
+        over = w > MAX_WEIGHT
+        if not over.any():
+            break
+        excess = (w[over] - MAX_WEIGHT).sum()
+        w[over] = MAX_WEIGHT
+        free = ~over
+        if not free.any():
+            break
+        w[free] += excess * w[free] / w[free].sum()
+    return w / w.sum()
 
 
 def train(panel: pd.DataFrame, as_of_ts: pd.Timestamp) -> lgb.LGBMRegressor:
@@ -137,9 +157,9 @@ def main():
     print(f">> 对 {len(pred_df)} 只股票打分...")
     pred_df = pred_df.assign(score=model.predict(pred_df[FEATURE_COLUMNS]))
 
-    # ── 6. 构建组合（rank-weighted，10% 单股上限）───────────────────────────
+    # ── 6. 构建组合（score-weighted，val set 上优于 rank-weighted，10% 单股上限）──
     scores  = pred_df.set_index("stock_code")["score"]
-    weights = build_portfolio(scores, top_k=args.top_k)
+    weights = build_score_weighted(scores, top_k=args.top_k)
 
     # ── 7. 保存并输出摘要 ────────────────────────────────────────────────────
     out_path = Path(args.out)
